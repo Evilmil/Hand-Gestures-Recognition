@@ -1,168 +1,132 @@
-# organize imports
+# cam_run.py (uppdaterad)
 import cv2
 import imutils
 import numpy as np
-from sklearn.metrics import pairwise
-from keras.models import load_model
-from scipy.misc import imresize
+from tensorflow.keras.models import load_model
 
-# global variables
+# === Globala variabler ===
 bg = None
+accumWeight = 0.5
+top, right, bottom, left = 10, 350, 225, 590
 
-
+# === Bakgrundsmodell ===
 def run_avg(image, accumWeight):
     global bg
-    # initialize the background
     if bg is None:
         bg = image.copy().astype("float")
         return
-
-    # compute weighted average, accumulate it and update the background
     cv2.accumulateWeighted(image, bg, accumWeight)
 
+# === Segmenteringsfunktion ===
+def segment(roi_bgr, bg, threshold=25, min_area=1000):
+    if bg is None:
+        return None
 
-def segment(image, threshold=25):
-    global bg
-    # find the absolute difference between background and current frame
-    diff = cv2.absdiff(bg.astype("uint8"), image)
+    hsv = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
+    lower_skin = np.array([0, 20, 70], dtype=np.uint8)
+    upper_skin = np.array([20, 255, 255], dtype=np.uint8)
+    mask_hsv = cv2.inRange(hsv, lower_skin, upper_skin)
 
-    # threshold the diff image so that we get the foreground
-    thresholded = cv2.threshold(diff, threshold, 255, cv2.THRESH_BINARY)[1]
+    gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (7, 7), 0)
+    diff = cv2.absdiff(bg.astype("uint8"), gray)
+    _, thresholded = cv2.threshold(diff, threshold, 255, cv2.THRESH_BINARY)
 
-    # get the contours in the thresholded image
-    (cnts, _) = cv2.findContours(thresholded.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    combined_mask = cv2.bitwise_and(mask_hsv, thresholded)
 
-    # return None, if no contours detected
-    if len(cnts) == 0:
-        return
-    else:
-        # based on contour area, get the maximum contour which is the hand
-        segmented = max(cnts, key=cv2.contourArea)
-        return (thresholded, segmented)
+    kernel = np.ones((4, 4), np.uint8)
+    combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
+    combined_mask = cv2.dilate(combined_mask, kernel, iterations=1)
+    combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
+    combined_mask = cv2.GaussianBlur(combined_mask, (5, 5), 0)
 
+    contours, _ = cv2.findContours(combined_mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if len(contours) == 0:
+        return None
 
+    largest = max(contours, key=cv2.contourArea)
+    if cv2.contourArea(largest) < min_area:
+        return None
+
+    return (combined_mask, largest)
+
+# === Ladda modell ===
 def _load_weights():
     try:
         model = load_model("hand_gesture_recog_model.h5")
         print(model.summary())
-        # print(model.get_weights())
-        # print(model.optimizer)
         return model
     except Exception as e:
+        print(f"Error loading model: {e}")
         return None
 
-
+# === Prediktion ===
 def getPredictedClass(model):
+    image = cv2.imread('Temp.png', cv2.IMREAD_GRAYSCALE)
+    image = cv2.resize(image, (100, 120))
+    image = image.astype("float32") / 255.0
+    image = image.reshape(1, 120, 100, 1)
 
-    image = cv2.imread('Temp.png')
-    gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    gray_image = imresize(gray_image, [100, 120])
-
-    gray_image = gray_image.reshape(1, 100, 120, 1)
-
-    prediction = model.predict_on_batch(gray_image)
-
+    prediction = model.predict(image)
     predicted_class = np.argmax(prediction)
-    if predicted_class == 0:
-        return "Blank"
-    elif predicted_class == 1:
-        return "OK"
-    elif predicted_class == 2:
-        return "Thumbs Up"
-    elif predicted_class == 3:
-        return "Thumbs Down"
-    elif predicted_class == 4:
-        return "Punch"
-    elif predicted_class == 5:
-        return "High Five"
 
+    probs = model.predict(image)[0]
+    print ("Sannolikhet:", probs)
 
+    classes = ["Blank", "OK", "Thumbs Up", "Thumbs Down", "Punch", "High Five"]
+    return classes[predicted_class]
+
+# === Huvudprogram ===
 if __name__ == "__main__":
-    # initialize accumulated weight
-    accumWeight = 0.5
-
-    # get the reference to the webcam
-    camera = cv2.VideoCapture(0)
-
-    fps = int(camera.get(cv2.CAP_PROP_FPS))
-    # region of interest (ROI) coordinates
-    top, right, bottom, left = 10, 350, 225, 590
-    # initialize num of frames
-    num_frames = 0
-    # calibration indicator
-    calibrated = False
     model = _load_weights()
+    camera = cv2.VideoCapture(0)
+    num_frames = 0
     k = 0
-    # keep looping, until interrupted
-    while (True):
-        # get the current frame
-        (grabbed, frame) = camera.read()
 
-        # resize the frame
+    while True:
+        ret, frame = camera.read()
+        if not ret:
+            break
+
         frame = imutils.resize(frame, width=700)
-        # flip the frame so that it is not the mirror view
         frame = cv2.flip(frame, 1)
-
-        # clone the frame
         clone = frame.copy()
-
-        # get the height and width of the frame
-        (height, width) = frame.shape[:2]
-
-        # get the ROI
         roi = frame[top:bottom, right:left]
 
-        # convert the roi to grayscale and blur it
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (7, 7), 0)
 
-        # to get the background, keep looking till a threshold is reached
-        # so that our weighted average model gets calibrated
         if num_frames < 30:
             run_avg(gray, accumWeight)
             if num_frames == 1:
-                print("[STATUS] please wait! calibrating...")
+                print("[STATUS] Kalibrerar bakgrund... Håll undan handen.")
             elif num_frames == 29:
-                print("[STATUS] calibration successfull...")
+                print("[STATUS] Bakgrund kalibrerad!")
         else:
-            # segment the hand region
-            hand = segment(gray)
-
-            # check whether hand region is segmented
+            hand = segment(roi, bg)
             if hand is not None:
-                # if yes, unpack the thresholded image and
-                # segmented region
-                (thresholded, segmented) = hand
+                thresholded, segmented = hand
+                cv2.drawContours(clone, [segmented + (right, top)], -1, (0, 0, 255), 2)
 
-                # draw the segmented region and display the frame
-                cv2.drawContours(clone, [segmented + (right, top)], -1, (0, 0, 255))
+                if k % 5 == 0:
+                    x, y, w, h = cv2.boundingRect(segmented)
+                    hand_roi = thresholded[y:y+h, x:x+w]
+                    #roi_resized = cv2.resize(hand_roi, (100, 120))
+                    cv2.imwrite("Temp.png", thresholded)
 
-                # count the number of fingers
-                # fingers = count(thresholded, segmented)
-                if k % (fps / 6) == 0:
-                    cv2.imwrite('Temp.png', thresholded)
                     predictedClass = getPredictedClass(model)
-                    cv2.putText(clone, str(predictedClass), (70, 45), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                    cv2.putText(clone, str(predictedClass), (70, 45),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
-                # show the thresholded image
-                cv2.imshow("Thesholded", thresholded)
-        k = k + 1
-        # draw the segmented hand
-        cv2.rectangle(clone, (left, top), (right, bottom), (0, 255, 0), 2)
+                cv2.imshow("Thresholded", thresholded)
 
-        # increment the number of frames
+        k += 1
         num_frames += 1
-
-        # display the frame with segmented hand
+        cv2.rectangle(clone, (left, top), (right, bottom), (0, 255, 0), 2)
         cv2.imshow("Video Feed", clone)
 
-        # observe the keypress by the user
-        keypress = cv2.waitKey(1) & 0xFF
-
-        # if the user pressed "q", then stop looping
-        if keypress == ord("q"):
+        if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
-    # free up memory
     camera.release()
     cv2.destroyAllWindows()
