@@ -53,7 +53,7 @@ def segment(roi_bgr, bg, threshold=25, min_area=1000):
 # === Ladda modell ===
 def _load_weights():
     try:
-        model = load_model("hand_gesture_recog_model.h5")
+        model = load_model("hand_gesture_model.h5")
         print(model.summary())
         return model
     except Exception as e:
@@ -67,13 +67,12 @@ def getPredictedClass(model):
     image = image.astype("float32") / 255.0
     image = image.reshape(1, 120, 100, 1)
 
-    prediction = model.predict(image)
-    predicted_class = np.argmax(prediction)
-
     probs = model.predict(image)[0]
+    predicted_class = np.argmax(probs)
+
     print ("Sannolikhet:", probs)
 
-    classes = ["Blank", "OK", "Thumbs Up", "Thumbs Down", "Punch", "High Five"]
+    classes = ["blank", "fist", "five", "ok", "thumbsdown", "thumbsup"]
     return classes[predicted_class]
 
 # === Huvudprogram ===
@@ -112,7 +111,7 @@ if __name__ == "__main__":
                     x, y, w, h = cv2.boundingRect(segmented)
                     hand_roi = thresholded[y:y+h, x:x+w]
                     #roi_resized = cv2.resize(hand_roi, (100, 120))
-                    cv2.imwrite("Temp.png", thresholded)
+                    cv2.imwrite("Temp.png", hand_roi)
 
                     predictedClass = getPredictedClass(model)
                     cv2.putText(clone, str(predictedClass), (70, 45),

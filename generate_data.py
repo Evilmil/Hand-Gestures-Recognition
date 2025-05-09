@@ -12,8 +12,8 @@ import numpy as np
 import os
 
 # === Gestklass (hårdkodat för exempelvis 'blank') ===
-GESTURE_NAME = "blank"
-SAVE_ROOT = "my_dataset/data"
+GESTURE_NAME = "thumbsup"
+SAVE_ROOT = "my_dataset/data/thumbsup"
 os.makedirs(SAVE_ROOT, exist_ok=True)
 
 bg = None
